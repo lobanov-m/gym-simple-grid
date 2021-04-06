@@ -3,8 +3,44 @@ import cv2
 import gym
 import gym.utils.seeding
 import numpy as np
+
 from enum import IntEnum
+
+from astar import AStar
+
 from typing import Optional
+
+
+class GymGridAStar(AStar):
+    def __init__(self, grid):
+        self.grid = grid
+
+    def neighbors(self, node):
+        neighbours_offsets = [
+            [-1, -1],
+            [ 0, -1],
+            [ 1, -1],
+            [ 1,  0],
+            [ 1,  1],
+            [ 0,  1],
+            [-1,  1],
+            [-1,  0],
+        ]
+        neighbours = [(node[0] + offset[0], node[1] + offset[1]) for offset in neighbours_offsets]
+        return neighbours
+
+    def distance_between(self, n1, n2):
+        d = np.linalg.norm(np.array(n1) - np.array(n2))
+        if self.grid[n2[1], n2[0]] == 0:
+            d = 255
+        return d
+
+    def heuristic_cost_estimate(self, current, goal):
+        return np.linalg.norm(np.array(goal) - current)
+
+    def is_goal_reached(self, current, goal):
+        return current == goal
+
 
 class GymGrid(gym.Env):
     class Actions(IntEnum):
@@ -28,6 +64,10 @@ class GymGrid(gym.Env):
         self.grid = None
         self.position = None
         self.target = None
+        self.history = None
+        self.astar = None
+        self.astar_path = None
+        self.astar_distance = None
         self.i_step = None
 
         self.observation_space = gym.spaces.Box(
@@ -55,11 +95,19 @@ class GymGrid(gym.Env):
         self.grid[-1] = 0
         self.grid[:, 0] = 0
         self.grid[:, -1] = 0
+        self.grid[7, -4:] = 0
 
-        # self.position = self._random_position()
-        self.position = np.array([1, 1], np.int64)
+        valid_position = False
+        while not valid_position:
+            position = self._random_position()
+            valid_position = self._at(position) != 0
+        self.position = position
+        # self.position = np.array([1, 1], np.int64)
         self.target = np.array([self.grid_size[0] - 2, self.grid_size[1] - 2], np.int64)
-
+        self.history = [position]
+        self.astar = GymGridAStar(self.grid)
+        self.astar_path = list(self.astar.astar(tuple(self.position.tolist()), tuple(self.target.tolist())))
+        self.astar_distance = self._calculate_distance(self.astar_path)
         self.i_step = 0
 
         obs = self._get_observation()
@@ -70,13 +118,16 @@ class GymGrid(gym.Env):
         new_position = self._get_new_position(action)
         if np.any(new_position < 0) or new_position[0] > self.grid_size[1] or new_position[1] > self.grid_size[0]:
              raise ValueError
+        self.position = new_position
+        self.history.append(new_position)
 
         reward = 0
         done = False
 
         # Достигли цели
         if np.all(new_position == self.target):
-            reward = 10
+            d = self._calculate_distance(self.history)
+            reward = max(10, 20 - (d - self.astar_distance))
             done = True
         # Врезались в непроходимое препятствие
         elif self._at(new_position) == 0:
@@ -90,8 +141,6 @@ class GymGrid(gym.Env):
             reward = -1
             done = False
 
-        self.position = new_position
-        self.i_step += 1
         obs = self._get_observation()
         return obs, reward, done, {}
 
@@ -121,6 +170,18 @@ class GymGrid(gym.Env):
         cv2.rectangle(img, (i * cell_size + border_size, j * cell_size + border_size),
                       ((i + 1) * cell_size - border_size, (j + 1) * cell_size - border_size),
                       color, cv2.FILLED)
+        for i in range(len(self.history) - 1):
+            x0, y0 = self.history[i][0] * cell_size + cell_size // 2, self.history[i][1] * cell_size + cell_size // 2
+            x1 = self.history[i + 1][0] * cell_size + cell_size // 2
+            y1 = self.history[i + 1][1] * cell_size + cell_size // 2
+            cv2.line(img, (x0, y0), (x1, y1), (0, 0, 255))
+
+        for i in range(len(self.astar_path) - 1):
+            x0 = self.astar_path[i][0] * cell_size + cell_size // 2
+            y0 = self.astar_path[i][1] * cell_size + cell_size // 2
+            x1 = self.astar_path[i + 1][0] * cell_size + cell_size // 2
+            y1 = self.astar_path[i + 1][1] * cell_size + cell_size // 2
+            cv2.line(img, (x0, y0), (x1, y1), (255, 0, 0))
 
         if mode == 'human':
             ar.imshow(img, resize=False)
@@ -130,7 +191,7 @@ class GymGrid(gym.Env):
             super(GymGrid, self).render(mode)
 
     def _at(self, position):
-        return self.grid[position[0], position[1]]
+        return self.grid[position[1], position[0]]
 
     def _random_position(self):
         return np.array([self.np_random.randint(1, self.grid_size[0] - 1),
@@ -150,24 +211,34 @@ class GymGrid(gym.Env):
 
     def _get_new_position(self, action: 'GymGrid.Actions'):
         if action == GymGrid.Actions.Up:
-            return self.position + [-1, 0]
+            return self.position + [0, -1]
         elif action == GymGrid.Actions.UpRight:
-            return self.position + [-1, 1]
+            return self.position + [1, -1]
         elif action == GymGrid.Actions.Right:
-            return self.position + [0, 1]
+            return self.position + [1, 0]
         elif action == GymGrid.Actions.DownRight:
             return self.position + [1, 1]
         elif action == GymGrid.Actions.Down:
-            return self.position + [1, 0]
+            return self.position + [0, 1]
         elif action == GymGrid.Actions.DownLeft:
-            return self.position + [1, -1]
+            return self.position + [-1, 1]
         elif action == GymGrid.Actions.Left:
-            return self.position + [0, -1]
+            return self.position + [-1, 0]
         elif action == GymGrid.Actions.UpLeft:
             return self.position + [-1, -1]
         elif action == GymGrid.Actions.Stay:
             return self.position
 
+    def _calculate_distance(self, path):
+        d = 0
+        for i in range(len(path) - 1):
+            p0 = path[i]
+            p1 = path[i + 1]
+            d += self._dist(p0, p1)
+        return d
+
+    def _dist(self, p0, p1):
+        return np.linalg.norm(np.array(p0) - np.array(p1))
 
 gym.register(
     id='GymGrid-v0',
