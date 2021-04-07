@@ -11,7 +11,7 @@ from astar import AStar
 from typing import Optional
 
 
-class GymGridAStar(AStar):
+class AStarForGymGrid(AStar):
     def __init__(self, grid):
         self.grid = grid
 
@@ -31,7 +31,8 @@ class GymGridAStar(AStar):
 
     def distance_between(self, n1, n2):
         d = np.linalg.norm(np.array(n1) - np.array(n2))
-        if self.grid[n2[1], n2[0]] == 0:
+        h, w = self.grid.shape
+        if n2[0] >= w or n2[1] >= h or self.grid[n2[1], n2[0]] == 0:
             d = 255
         return d
 
@@ -64,6 +65,7 @@ class GymGrid(gym.Env):
         self.grid = None
         self.position = None
         self.target = None
+        self.done = None
         self.history = None
         self.astar = None
         self.astar_path = None
@@ -95,7 +97,11 @@ class GymGrid(gym.Env):
         self.grid[-1] = 0
         self.grid[:, 0] = 0
         self.grid[:, -1] = 0
-        self.grid[7, -4:] = 0
+
+        for i in range(5):
+            x0 = self.np_random.randint(1, self.grid_size[0] - 1)
+            y0 = self.np_random.randint(1, self.grid_size[1] - 1)
+            self.grid[y0, x0] = 0
 
         valid_position = False
         while not valid_position:
@@ -104,8 +110,11 @@ class GymGrid(gym.Env):
         self.position = position
         # self.position = np.array([1, 1], np.int64)
         self.target = np.array([self.grid_size[0] - 2, self.grid_size[1] - 2], np.int64)
+        self.grid[self.target[1], self.target[0]] = 255
+
+        self.done = False
         self.history = [position]
-        self.astar = GymGridAStar(self.grid)
+        self.astar = AStarForGymGrid(self.grid)
         self.astar_path = list(self.astar.astar(tuple(self.position.tolist()), tuple(self.target.tolist())))
         self.astar_distance = self._calculate_distance(self.astar_path)
         self.i_step = 0
@@ -115,37 +124,39 @@ class GymGrid(gym.Env):
 
     def step(self, action):
         self.i_step += 1
+        assert self._at(self.position) != 0, f'{self.history}'
         new_position = self._get_new_position(action)
         if np.any(new_position < 0) or new_position[0] > self.grid_size[1] or new_position[1] > self.grid_size[0]:
              raise ValueError
         self.position = new_position
         self.history.append(new_position)
 
-        reward = 0
+        reward = 1
         done = False
 
         # Достигли цели
         if np.all(new_position == self.target):
             d = self._calculate_distance(self.history)
-            reward = max(10, 20 - (d - self.astar_distance))
+            reward = max(100, 200 - (d - self.astar_distance))
             done = True
         # Врезались в непроходимое препятствие
         elif self._at(new_position) == 0:
-            reward = 0
+            reward = -100
             done = True
         # Превысили допустимое количество шагов
         elif self.i_step >= self.max_steps:
-            reward = 0
+            reward = -100
             done = True
         elif action == self.actions.Stay:
             reward = -1
             done = False
+        self.done = done
 
         obs = self._get_observation()
         return obs, reward, done, {}
 
     def render(self, mode='human'):
-        cell_size = 80
+        cell_size = 20
         border_size = cell_size // 10
         w, h = self.grid_size[0], self.grid_size[1]
         img = np.zeros([cell_size * w, cell_size * h, 3], np.uint8)
@@ -184,7 +195,7 @@ class GymGrid(gym.Env):
             cv2.line(img, (x0, y0), (x1, y1), (255, 0, 0))
 
         if mode == 'human':
-            ar.imshow(img, resize=False)
+            ar.imshow(img, resize=False, delay=1 if not self.done else ar.imshow.delay)
         elif mode == 'rgb_array':
             return img
         else:
