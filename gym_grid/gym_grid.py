@@ -55,7 +55,7 @@ class GymGrid(gym.Env):
         UpLeft = 7
         Stay = 8
 
-    def __init__(self, grid_size=(8, 8), max_steps=100, seed=1):
+    def __init__(self, grid_size=(20, 20), max_steps=100, seed=1):
         self.grid_size = (grid_size[0] + 2, grid_size[1] + 2)
         self.max_steps = max_steps
 
@@ -109,7 +109,10 @@ class GymGrid(gym.Env):
             valid_position = self._at(position) != 0
         self.position = position
         # self.position = np.array([1, 1], np.int64)
-        self.target = np.array([self.grid_size[0] - 2, self.grid_size[1] - 2], np.int64)
+
+        x0 = self.np_random.randint(1, self.grid_size[0] - 1)
+        y0 = self.np_random.randint(1, self.grid_size[1] - 1)
+        self.target = np.array([x0, y0])
         self.grid[self.target[1], self.target[0]] = 255
 
         self.done = False
@@ -131,21 +134,21 @@ class GymGrid(gym.Env):
         self.position = new_position
         self.history.append(new_position)
 
-        reward = 1
+        reward = 0
         done = False
 
         # Достигли цели
         if np.all(new_position == self.target):
             d = self._calculate_distance(self.history)
-            reward = max(100, 200 - (d - self.astar_distance))
+            reward = 10 * self.astar_distance / d if d != 0 else 1
             done = True
         # Врезались в непроходимое препятствие
         elif self._at(new_position) == 0:
-            reward = -100
+            reward = 0
             done = True
         # Превысили допустимое количество шагов
         elif self.i_step >= self.max_steps:
-            reward = -100
+            reward = 0
             done = True
         elif action == self.actions.Stay:
             reward = -1
