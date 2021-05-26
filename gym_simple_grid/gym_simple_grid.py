@@ -1,4 +1,3 @@
-import arcturus as ar
 import cv2
 import gym
 import gym.utils.seeding
@@ -8,10 +7,10 @@ from enum import IntEnum
 
 from astar import AStar
 
-from typing import Optional
+from typing import Optional, Tuple, List
 
 
-class AStarForGymGrid(AStar):
+class AStarForGymSimpleGrid(AStar):
     def __init__(self, grid):
         self.grid = grid
 
@@ -43,7 +42,7 @@ class AStarForGymGrid(AStar):
         return current == goal
 
 
-class GymGrid(gym.Env):
+class GymSimpleGrid(gym.Env):
     class Actions(IntEnum):
         Up = 0
         UpRight = 1
@@ -55,16 +54,58 @@ class GymGrid(gym.Env):
         UpLeft = 7
         Stay = 8
 
-    def __init__(self, grid_size=(20, 20), max_steps=100, seed=1):
-        self.grid_size = (grid_size[0] + 2, grid_size[1] + 2)
-        self.max_steps = max_steps
+    def __init__(self, grid_size: Tuple[int, int] = (20, 20),
+                 start_position: Tuple[int, int] = None,
+                 target: Tuple[int, int] = None,
+                 obstacles: List[Tuple[int, int]] = None,
+                 num_obstacles: int = None,
+                 max_steps: int = 100,
+                 seed: int = 1,
+                 target_image_size=400):
+        """
+        Args:
+            grid_size: Size of gym field, (w, h)
+            start_position: Initial position of agent in grid. If None, then randomized.
+                            (x, y), 0 < x < grid_size[0], 0 < y < grid_size[1]
+            target: Position of target in grid. If None, then randomized.
+                    (x, y), 0 < x < grid_size[0], 0 < y < grid_size[1]
+            obstacles: Optional list of obstacles coordinates. If None then `num_obstacles` obstacles will be generated 
+            num_obstacles: Optional number of obstacles. Used only if `obstacles` if None
+            max_steps: Maximum number of steps after which gym will be restarted
+            seed: Random generator seed
+            target_image_size: Size of the biggest side of rendered image
+        """
+        # Size of grid with borders
+        self._grid_size = (grid_size[0] + 2, grid_size[1] + 2)
 
-        self.actions = GymGrid.Actions
+        if start_position is not None:
+            assert 0 <= start_position[0] < self.grid_size[0] and 0 <= start_position[1] < self.grid_size[1]
+        self.start_position = start_position
+
+        if target is not None:
+            assert target != start_position
+            assert 0 <= target[0] < self.grid_size[0] and 0 <= target[1] < self.grid_size[1]
+        self.target = target
+
+        self.obstacles = obstacles
+        self.num_obstacles = 0
+        if obstacles is not None:
+            assert num_obstacles is None, "If use `obstacles`, `num_obstacles` should be None"
+            for x, y in obstacles:
+                assert (x, y) != start_position and (x, y) != target
+                assert 0 <= x < self.grid_size[0] and 0 <= y < self.grid_size[1]
+            self.num_obstacles = len(obstacles)
+        elif num_obstacles is not None:
+            self.num_obstacles = num_obstacles
+        self.max_steps = max_steps
+        self.target_image_size = target_image_size
+
+        self.actions = GymSimpleGrid.Actions
         self.action_space = gym.spaces.Discrete(len(self.actions))
 
         self.grid = None
         self.position = None
-        self.target = None
+        self._target = None
         self.done = None
         self.history = None
         self.astar = None
@@ -72,19 +113,17 @@ class GymGrid(gym.Env):
         self.astar_distance = None
         self.i_step = None
 
-        self.observation_space = gym.spaces.Box(
-            low=0,
-            high=255,
-            shape=(self.grid_size[1], self.grid_size[0], 3),
-            dtype='uint8'
-        )
-        self.observation_space = gym.spaces.Dict({
-            'image': self.observation_space
-        })
+        image_observation_space = gym.spaces.Box(low=0, high=255, shape=(self._grid_size[1], self._grid_size[0], 3),
+                                                 dtype='uint8')
+        self.observation_space = gym.spaces.Dict({'image': image_observation_space})
 
         self.np_random = None
         self.seed(seed=seed)
         self.reset()
+
+    @property
+    def grid_size(self):
+        return self._grid_size[0] - 2, self._grid_size[1] - 2
 
     def seed(self, seed=1337):
         # Seed the random number generator
@@ -92,33 +131,47 @@ class GymGrid(gym.Env):
         return [seed]
 
     def reset(self):
-        self.grid = np.ones((self.grid_size[1], self.grid_size[0]), np.uint8) * 255
+        self.grid = np.ones((self._grid_size[1], self._grid_size[0]), np.uint8) * 255
         self.grid[0] = 0
         self.grid[-1] = 0
         self.grid[:, 0] = 0
         self.grid[:, -1] = 0
 
-        for i in range(5):
-            x0 = self.np_random.randint(1, self.grid_size[0] - 1)
-            y0 = self.np_random.randint(1, self.grid_size[1] - 1)
-            self.grid[y0, x0] = 0
+        if self.start_position is None:
+            self.position = self._random_position()
+        else:
+            self.position = np.array([self.start_position[0] + 1, self.start_position[1] + 1])
+        
+        if self.target is None:
+            while 1:
+                self._target = self._random_position()
+                if np.any(self._target != self.position):
+                    break
+        else:
+            self._target = np.array([self.target[0] + 1, self.target[1] + 1])
+        self.grid[self._target[1], self._target[0]] = 255
 
-        valid_position = False
-        while not valid_position:
-            position = self._random_position()
-            valid_position = self._at(position) != 0
-        self.position = position
-        # self.position = np.array([1, 1], np.int64)
-
-        x0 = self.np_random.randint(1, self.grid_size[0] - 1)
-        y0 = self.np_random.randint(1, self.grid_size[1] - 1)
-        self.target = np.array([x0, y0])
-        self.grid[self.target[1], self.target[0]] = 255
+        if self.obstacles is None:
+            num_obstacles = 0
+            while num_obstacles != self.num_obstacles:
+                x0 = self.np_random.randint(1, self._grid_size[0] - 1)
+                y0 = self.np_random.randint(1, self._grid_size[1] - 1)
+                if np.all(np.array([x0, y0]) == self.position) or np.all(np.array([x0, y0]) == self.target):
+                    continue
+                self.grid[y0, x0] = 0
+                num_obstacles += 1
+        else:
+            for x0, y0 in self.obstacles:
+                x0 += 1
+                y0 += 1
+                if np.all(np.array([x0, y0]) == self.position) or np.all(np.array([x0, y0]) == self.target):
+                    continue
+                self.grid[y0, x0] = 0
 
         self.done = False
-        self.history = [position]
-        self.astar = AStarForGymGrid(self.grid)
-        self.astar_path = list(self.astar.astar(tuple(self.position.tolist()), tuple(self.target.tolist())))
+        self.history = [self.position]
+        self.astar = AStarForGymSimpleGrid(self.grid)
+        self.astar_path = list(self.astar.astar(tuple(self.position.tolist()), tuple(self._target.tolist())))
         self.astar_distance = self._calculate_distance(self.astar_path)
         self.i_step = 0
 
@@ -129,8 +182,8 @@ class GymGrid(gym.Env):
         self.i_step += 1
         assert self._at(self.position) != 0, f'{self.history}'
         new_position = self._get_new_position(action)
-        if np.any(new_position < 0) or new_position[0] > self.grid_size[1] or new_position[1] > self.grid_size[0]:
-             raise ValueError
+        if np.any(new_position < 0) or new_position[0] > self._grid_size[0] or new_position[1] > self._grid_size[1]:
+            raise ValueError
         self.position = new_position
         self.history.append(new_position)
 
@@ -138,8 +191,8 @@ class GymGrid(gym.Env):
         done = False
 
         # Достигли цели
-        if np.all(new_position == self.target):
-            d = self._calculate_distance(self.history)
+        if np.all(new_position == self._target):
+            d = self._calculate_distance(self.history)  # Расчитываем длину пройденного пути
             reward = 10 * self.astar_distance / d if d != 0 else 1
             done = True
         # Врезались в непроходимое препятствие
@@ -159,10 +212,10 @@ class GymGrid(gym.Env):
         return obs, reward, done, {}
 
     def render(self, mode='human'):
-        cell_size = 20
-        border_size = cell_size // 10
-        w, h = self.grid_size[0], self.grid_size[1]
-        img = np.zeros([cell_size * w, cell_size * h, 3], np.uint8)
+        cell_size = self.target_image_size // max(self.grid_size)
+        border_size = cell_size // 10 if cell_size > 10 else 1
+        w, h = self._grid_size[0], self._grid_size[1]
+        img = np.zeros([cell_size * h, cell_size * w, 3], np.uint8)
         for i in range(h):
             cv2.line(img, (0, i * cell_size), (cell_size * w, i * cell_size), [128, 128, 128], 1)
         for i in range(w):
@@ -179,7 +232,7 @@ class GymGrid(gym.Env):
         cv2.rectangle(img, (i * cell_size + border_size, j * cell_size + border_size),
                       ((i + 1) * cell_size - border_size, (j + 1) * cell_size - border_size),
                       color, cv2.FILLED)
-        i, j = self.target
+        i, j = self._target
         color = (0, 255, 0)
         cv2.rectangle(img, (i * cell_size + border_size, j * cell_size + border_size),
                       ((i + 1) * cell_size - border_size, (j + 1) * cell_size - border_size),
@@ -198,24 +251,25 @@ class GymGrid(gym.Env):
             cv2.line(img, (x0, y0), (x1, y1), (255, 0, 0))
 
         if mode == 'human':
-            ar.imshow(img, resize=False, delay=1 if not self.done else ar.imshow.delay)
+            cv2.imshow("", img)
+            cv2.waitKey()
         elif mode == 'rgb_array':
             return img
         else:
-            super(GymGrid, self).render(mode)
+            super(GymSimpleGrid, self).render(mode)
 
     def _at(self, position):
         return self.grid[position[1], position[0]]
 
     def _random_position(self):
-        return np.array([self.np_random.randint(1, self.grid_size[0] - 1),
-                         self.np_random.randint(1, self.grid_size[1] - 1)], np.int64)
+        return np.array([self.np_random.randint(1, self._grid_size[0] - 1),
+                         self.np_random.randint(1, self._grid_size[1] - 1)], np.int64)
 
     def _get_observation(self):
         agent = np.zeros_like(self.grid)
         agent[self.position[1], self.position[0]] = 255
         target = np.zeros_like(self.grid)
-        target[self.target[1], self.target[0]] = 255
+        target[self._target[1], self._target[0]] = 255
         img = np.stack([agent, target, self.grid], -1)
         obs = {
             'image': img,
@@ -224,23 +278,23 @@ class GymGrid(gym.Env):
         return obs
 
     def _get_new_position(self, action: 'GymGrid.Actions'):
-        if action == GymGrid.Actions.Up:
+        if action == GymSimpleGrid.Actions.Up:
             return self.position + [0, -1]
-        elif action == GymGrid.Actions.UpRight:
+        elif action == GymSimpleGrid.Actions.UpRight:
             return self.position + [1, -1]
-        elif action == GymGrid.Actions.Right:
+        elif action == GymSimpleGrid.Actions.Right:
             return self.position + [1, 0]
-        elif action == GymGrid.Actions.DownRight:
+        elif action == GymSimpleGrid.Actions.DownRight:
             return self.position + [1, 1]
-        elif action == GymGrid.Actions.Down:
+        elif action == GymSimpleGrid.Actions.Down:
             return self.position + [0, 1]
-        elif action == GymGrid.Actions.DownLeft:
+        elif action == GymSimpleGrid.Actions.DownLeft:
             return self.position + [-1, 1]
-        elif action == GymGrid.Actions.Left:
+        elif action == GymSimpleGrid.Actions.Left:
             return self.position + [-1, 0]
-        elif action == GymGrid.Actions.UpLeft:
+        elif action == GymSimpleGrid.Actions.UpLeft:
             return self.position + [-1, -1]
-        elif action == GymGrid.Actions.Stay:
+        elif action == GymSimpleGrid.Actions.Stay:
             return self.position
 
     def _calculate_distance(self, path):
@@ -251,20 +305,12 @@ class GymGrid(gym.Env):
             d += self._dist(p0, p1)
         return d
 
-    def _dist(self, p0, p1):
+    @staticmethod
+    def _dist(p0, p1):
         return np.linalg.norm(np.array(p0) - np.array(p1))
 
+
 gym.register(
-    id='GymGrid-v0',
-    entry_point='gym_grid:GymGrid'
+    id='GymSimpleGrid-v0',
+    entry_point='gym_simple_grid:GymSimpleGrid'
 )
-
-
-if __name__ == '__main__':
-    env = GymGrid((8, 8))
-    for i in range(10000):
-        env.render()
-        action = env.action_space.sample()
-        obs, reward, done, info = env.step(action)
-        if done:
-            env.reset()
