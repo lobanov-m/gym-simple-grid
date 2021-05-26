@@ -15,6 +15,10 @@ keys = {
     '0': 48,
     'q': 113,
     'esc': 27,
+    'left': 81,
+    'up': 82,
+    'right': 83,
+    'down': 84,
 }
 
 
@@ -31,6 +35,10 @@ def gym_simple_grid():
         keys['7']: env.actions.UpLeft,
         keys['8']: env.actions.Up,
         keys['9']: env.actions.UpRight,
+        keys['down']: env.actions.Down,
+        keys['left']: env.actions.Left,
+        keys['right']: env.actions.Right,
+        keys['up']: env.actions.Up,
     }
 
     for i in range(10000):

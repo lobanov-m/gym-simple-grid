@@ -6,3 +6,4 @@ Installation:
 pip install git+https://github.com/lobanov-m/gym-simple-grid.git
 ```
 Example is in `examples` directory.
+You can control agent with arrows and NumPad digit keys.
